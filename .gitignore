@@ -1,0 +1,11 @@
+# Full dataset archive — too large for GitHub/Cloudflare Pages
+full_image_archive/
+
+# Source data — too large for GitHub (127MB) and not served to browser
+utilities/MetObjectsWithHeightAndWeight.csv
+
+# Reference video — not served to browser
+utilities/arm_raise_video_small.mov
+
+# macOS
+.DS_Store

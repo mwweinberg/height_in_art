@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>About | Height in Art</title>
+    <script src="branding.js"></script>
+    <script src="analytics.js"></script>
+    <style>
+      body {
+        font-family: var(--brand-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+        max-width: 680px;
+        margin: 0 auto;
+        padding: 20px 16px 48px;
+        background-color: var(--brand-page-bg, #f5f5f5);
+      }
+
+      .brand-logo {
+        display: none;
+        max-height: 48px;
+        margin-bottom: 16px;
+        padding: 8px 14px;
+        border-radius: var(--brand-card-radius, 8px);
+        background-color: var(--brand-logo-bg, transparent);
+      }
+
+      .container {
+        background: var(--brand-card-bg, white);
+        border-radius: var(--brand-card-radius, 8px);
+        padding: 30px;
+        box-shadow: var(--brand-card-shadow, 0 2px 4px rgba(0,0,0,0.1));
+      }
+
+      h1 {
+        margin-top: 0;
+        color: var(--brand-text-dark, #002235);
+        font-size: 22px;
+      }
+
+      h2 {
+        color: var(--brand-text-dark, #002235);
+        font-size: 16px;
+        margin-top: 24px;
+      }
+
+      p {
+        color: var(--brand-text-light, #446a7f);
+        line-height: 1.7;
+        margin: 0 0 14px;
+      }
+
+      .back-link {
+        display: inline-block;
+        margin-bottom: 20px;
+        color: var(--brand-text-light, #446a7f);
+        text-decoration: none;
+        font-size: 13px;
+      }
+      .back-link:hover { color: var(--brand-text-dark, #002235); }
+    </style>
+  </head>
+
+  <body>
+    <img class="brand-logo" alt="Logo" style="display:none">
+    <a href="index.html" class="back-link">&larr; Back to Height in Art</a>
+
+    <div class="container">
+      <h1>About Height in Art</h1>
+
+      <p>
+        Height in Art is an interactive experience that measures your height using
+        your device's camera and assembles a stack of objects from The Metropolitan
+        Museum of Art whose heights together equal yours.
+      </p>
+
+      <h2>How it works</h2>
+      <p>
+        Stand in front of the camera and make the gesture — sweep one arm in a full
+        circle from your side, up above your head, and back down — to trigger a
+        measurement. The app uses machine learning (MoveNet via ml5.js) to detect your
+        body position and calculate your height from the pose.
+      </p>
+      <p>
+        A set of Met collection objects whose heights sum to yours is then selected at
+        random and displayed beside you. Scan the QR code or visit the link to learn
+        more about each object.
+      </p>
+
+      <h2>Credits</h2>
+      <p>
+        Artwork data courtesy of The Metropolitan Museum of Art Open Access collection.
+      </p>
+      <p>
+        Built with ml5.js, p5.js, and TensorFlow by your friends at the
+        <a href="https://www.glamelab.org/">GLAM-E Lab</a> and the
+        <a href="https://www.nyuengelberg.org/">Engelberg Center</a>.
+      </p>
+    </div>
+  </body>
+</html>

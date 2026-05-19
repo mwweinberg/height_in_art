@@ -1,0 +1,194 @@
+<!--
+  👋 Hello! This is an ml5.js example made and shared with ❤️.
+  Learn more about the ml5.js project: https://ml5js.org/
+  ml5.js license and Code of Conduct: https://github.com/ml5js/ml5-next-gen/blob/main/LICENSE.md
+
+  This example demonstrates drawing skeletons on poses for the MoveNet model.
+-->
+
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pose Match</title>
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+    <link rel="preconnect" href="https://unpkg.com">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+    <script src="branding.js"></script>
+    <script src="analytics.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.2/p5.min.js" defer></script>
+    <script src="https://unpkg.com/ml5@1/dist/ml5.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" defer></script>
+    <script src="sketch.js" defer></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: var(--brand-text-dark, #002235);
+        font-family: var(--brand-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      #page-header {
+        text-align: center;
+        padding: 24px 20px 16px;
+      }
+      #page-logo {
+        position: fixed;
+        top: 12px;
+        left: 16px;
+        max-height: 36px;
+        z-index: 10;
+        background-color: transparent;
+      }
+      #page-header h1 {
+        margin: 0 0 4px;
+        color: #ffffff;
+        font-size: 22px;
+        font-weight: 700;
+      }
+      #page-header p {
+        margin: 0;
+        color: var(--brand-accent, #00f47b);
+        font-size: 14px;
+        font-weight: 300;
+      }
+      #canvas-container {
+        position: relative;
+        display: inline-block;
+        border-radius: var(--brand-card-radius, 8px);
+        overflow: hidden;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+      }
+      #qrcode {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        background: white;
+        padding: 5px;
+        border-radius: 4px;
+      }
+      #about-link {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        background: var(--brand-overlay-bg, rgba(255, 255, 255, 0.9));
+        padding: 8px 16px;
+        border-radius: var(--brand-card-radius, 4px);
+        text-decoration: none;
+        color: var(--brand-text-dark, #333);
+        font-size: 14px;
+        z-index: 10;
+      }
+      #about-link:hover {
+        background: var(--brand-overlay-bg-hover, white);
+      }
+      #page-footer {
+        align-self: flex-end;
+        padding: 16px 20px;
+        color: rgba(255, 255, 255, 0.5);
+        font-size: 12px;
+        font-weight: 300;
+      }
+      #page-footer a {
+        color: rgba(255, 255, 255, 0.7);
+        text-decoration: none;
+      }
+      #page-footer a:hover {
+        color: #ffffff;
+      }
+      /* Explore/Best Match toggle */
+      #mode-toggle {
+        position: fixed;
+        bottom: 16px;
+        left: 16px;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.5);
+        font-family: var(--brand-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+      }
+      .toggle-switch {
+        position: relative;
+        display: inline-block;
+        width: 40px;
+        height: 22px;
+        cursor: pointer;
+      }
+      .toggle-switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .toggle-slider {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background-color: rgba(255, 255, 255, 0.2);
+        border-radius: 22px;
+      }
+      .toggle-slider:before {
+        content: "";
+        position: absolute;
+        height: 16px;
+        width: 16px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        border-radius: 50%;
+        transition: transform 0.3s;
+      }
+      .toggle-switch input:checked + .toggle-slider:before {
+        transform: translateX(18px);
+      }
+      /* Visually hidden but accessible to screen readers */
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+    </style>
+  </head>
+
+  <body>
+    <img id="page-logo" class="brand-logo" alt="Logo" style="display:none">
+    <div id="page-header">
+      <h1>Pose Match</h1>
+      <p>Strike a pose. Find your artwork.</p>
+    </div>
+    <a href="about.html" id="about-link">About</a>
+    <div id="canvas-container">
+      <div id="loading-message" style="width:800px;height:593px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.6);font-size:16px;">Loading pose detection model...</div>
+      <div id="qrcode"></div>
+      <!-- Screen reader announcement for match changes -->
+      <div id="match-announcement" aria-live="polite" class="sr-only"></div>
+    </div>
+    <div id="mode-toggle">
+      <span class="mode-label">Explore</span>
+      <label class="toggle-switch">
+        <input type="checkbox" id="explore-toggle">
+        <span class="toggle-slider"></span>
+      </label>
+      <span class="mode-label">Best Match</span>
+    </div>
+    <script>
+      document.getElementById('explore-toggle').addEventListener('change', function() {
+        exploreMode = !this.checked;
+        recentMatches = [];
+        matchStartTime = 0;
+        previousPoseVector = null;
+      });
+    </script>
+    <div id="page-footer">
+      From your friends at the <a href="https://www.glamelab.org/" target="_blank">GLAM-E Lab</a> and the <a href="https://www.nyuengelberg.org/" target="_blank">Engelberg Center</a>
+    </div>
+  </body>
+</html>

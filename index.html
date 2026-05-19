@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Height in Art</title>
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+    <link rel="preconnect" href="https://unpkg.com">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+    <script src="branding.js"></script>
+    <script src="analytics.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.2/p5.min.js" defer></script>
+    <script src="pose_match/ml5.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" defer></script>
+    <script src="gesture-animation.js" defer></script>
+    <script src="sketch.js" defer></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: var(--brand-text-dark, #002235);
+        font-family: var(--brand-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      #calibration-banner {
+        display: none;
+        width: 100%;
+        background-color: #b8000a;
+        color: #ffffff;
+        text-align: center;
+        padding: 12px 20px;
+        font-size: 15px;
+        box-sizing: border-box;
+        z-index: 20;
+      }
+      #calibration-banner a {
+        color: #ffffff;
+        font-weight: 700;
+        text-decoration: underline;
+      }
+
+      #page-logo {
+        position: fixed;
+        top: 12px;
+        left: 16px;
+        max-height: 36px;
+        z-index: 10;
+        background-color: transparent;
+      }
+
+      #page-header {
+        text-align: center;
+        padding: 24px 20px 16px;
+      }
+      #page-header h1 {
+        margin: 0 0 4px;
+        color: #ffffff;
+        font-size: 22px;
+        font-weight: 700;
+      }
+      #page-header p {
+        margin: 0;
+        color: var(--brand-accent, #00f47b);
+        font-size: 14px;
+        font-weight: 300;
+      }
+
+      #main-layout {
+        display: flex;
+        align-items: flex-start;
+        gap: 20px;
+      }
+
+      #canvas-container {
+        position: relative;
+        display: inline-block;
+        border-radius: var(--brand-card-radius, 8px);
+        overflow: hidden;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+        flex-shrink: 0;
+      }
+
+      /* QR sidebar — outside the canvas, to its right */
+      #qr-sidebar {
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        width: 160px;
+        height: 600px;
+      }
+
+      #qr-caption {
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 13px;
+        margin: 0;
+        text-align: center;
+      }
+
+      #qrcode {
+        background: white;
+        padding: 6px;
+        border-radius: 4px;
+        display: none;
+      }
+
+      #qr-loading {
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 12px;
+        display: none;
+        text-align: center;
+      }
+
+      #about-link {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        background: var(--brand-overlay-bg, rgba(255, 255, 255, 0.9));
+        padding: 8px 16px;
+        border-radius: var(--brand-card-radius, 4px);
+        text-decoration: none;
+        color: var(--brand-text-dark, #333);
+        font-size: 14px;
+        z-index: 10;
+      }
+      #about-link:hover {
+        background: var(--brand-overlay-bg-hover, white);
+      }
+
+      #recalibrate-link {
+        position: fixed;
+        bottom: 16px;
+        left: 16px;
+        color: rgba(255, 255, 255, 0.3);
+        font-size: 11px;
+        text-decoration: none;
+        z-index: 10;
+      }
+      #recalibrate-link:hover {
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      #occlusion-warning {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background: rgba(0,0,0,0.55);
+        color: rgba(255,255,255,0.8);
+        font-size: 11px;
+        padding: 6px 10px;
+        border-radius: 4px;
+        max-width: 190px;
+        line-height: 1.4;
+        display: none;
+      }
+
+      #page-footer {
+        align-self: flex-end;
+        padding: 16px 20px;
+        color: rgba(255, 255, 255, 0.5);
+        font-size: 12px;
+        font-weight: 300;
+      }
+      #page-footer a {
+        color: rgba(255, 255, 255, 0.7);
+        text-decoration: none;
+      }
+      #page-footer a:hover {
+        color: #ffffff;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="calibration-banner">
+      This experience needs to be calibrated before use.
+      <a href="calibration.html">Calibrate now &rarr;</a>
+    </div>
+
+    <img id="page-logo" class="brand-logo" alt="Logo" style="display:none">
+
+    <div id="page-header">
+      <h1>Height in Art</h1>
+      <p>Stand in front of the camera and make the gesture to discover your height in art.</p>
+    </div>
+
+    <a href="about.html" id="about-link">About</a>
+
+    <div id="main-layout">
+      <div id="canvas-container">
+        <div id="loading-message" style="width:800px;height:600px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.6);font-size:16px;">
+          Loading pose detection model…
+        </div>
+        <div id="occlusion-warning">For best results, make sure your entire body is visible.</div>
+        <div id="match-announcement" aria-live="polite" class="sr-only"></div>
+      </div>
+
+      <div id="qr-sidebar">
+        <p id="qr-caption">Scan to learn more about these objects</p>
+        <div id="qr-loading">Preparing your link…</div>
+        <div id="qrcode"></div>
+      </div>
+    </div>
+
+    <a href="calibration.html" id="recalibrate-link">Recalibrate</a>
+
+    <div id="page-footer">
+      From your friends at the <a href="https://www.glamelab.org/" target="_blank">GLAM-E Lab</a> and the <a href="https://www.nyuengelberg.org/" target="_blank">Engelberg Center</a>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Your Height in Art</title>
+    <script src="branding.js"></script>
+    <script src="analytics.js"></script>
+    <style>
+      body {
+        font-family: var(--brand-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+        max-width: 680px;
+        margin: 0 auto;
+        padding: 20px 16px 48px;
+        background-color: var(--brand-page-bg, #f5f5f5);
+      }
+
+      .brand-logo {
+        display: none;
+        max-height: 48px;
+        margin-bottom: 16px;
+        padding: 8px 14px;
+        border-radius: var(--brand-card-radius, 8px);
+        background-color: var(--brand-logo-bg, transparent);
+      }
+
+      h1 {
+        font-size: 22px;
+        font-weight: 700;
+        color: var(--brand-text-dark, #002235);
+        margin: 0 0 4px;
+      }
+
+      .page-intro {
+        font-size: 14px;
+        color: var(--brand-text-light, #446a7f);
+        margin: 0 0 28px;
+      }
+
+      /* Individual artwork card */
+      .artwork-card {
+        background: var(--brand-card-bg, #ffffff);
+        border-radius: var(--brand-card-radius, 8px);
+        box-shadow: var(--brand-card-shadow, 0 2px 4px rgba(0,34,53,0.1));
+        overflow: hidden;
+        margin-bottom: 20px;
+        display: flex;
+        gap: 0;
+      }
+
+      .card-image-col {
+        flex: 0 0 140px;
+        background: #f0f0f0;
+      }
+      .card-image-col img {
+        width: 140px;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .card-meta-col {
+        flex: 1;
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .artwork-height-badge {
+        display: inline-block;
+        background: var(--brand-accent, #00f47b);
+        color: var(--brand-text-dark, #002235);
+        font-size: 11px;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 3px;
+        margin-bottom: 8px;
+      }
+
+      .artwork-title {
+        font-size: 17px;
+        font-weight: 700;
+        color: var(--brand-text-dark, #002235);
+        margin: 0 0 4px;
+        line-height: 1.3;
+      }
+
+      .artwork-artist {
+        font-size: 14px;
+        color: var(--brand-text-light, #446a7f);
+        margin: 0 0 12px;
+      }
+
+      .metadata-list {
+        font-size: 12px;
+        color: var(--brand-text-light, #446a7f);
+        line-height: 1.7;
+        margin: 0 0 14px;
+      }
+      .metadata-list span {
+        display: block;
+      }
+      .metadata-list strong {
+        color: var(--brand-text-dark, #002235);
+        font-weight: 600;
+      }
+
+      .met-link {
+        display: inline-block;
+        padding: 7px 14px;
+        background-color: var(--brand-accent, #00f47b);
+        color: var(--brand-accent-text, #002235);
+        text-decoration: none;
+        border-radius: 4px;
+        font-size: 13px;
+        font-weight: 600;
+        align-self: flex-start;
+      }
+      .met-link:hover {
+        background-color: var(--brand-accent-hover, #00d46b);
+      }
+
+      .error-message {
+        text-align: center;
+        padding: 60px 20px;
+        color: var(--brand-text-light, #446a7f);
+        font-size: 15px;
+      }
+
+      .back-link {
+        display: inline-block;
+        margin-bottom: 20px;
+        color: var(--brand-text-light, #446a7f);
+        text-decoration: none;
+        font-size: 13px;
+      }
+      .back-link:hover { color: var(--brand-text-dark, #002235); }
+    </style>
+  </head>
+
+  <body>
+    <img class="brand-logo" alt="Logo" style="display:none">
+    <a href="index.html" class="back-link">&larr; Back to Height in Art</a>
+
+    <h1>Your Height in Art</h1>
+    <p class="page-intro">These objects from The Met collection add up to your height.</p>
+
+    <div id="content"></div>
+
+    <script>
+      const MET_API = 'https://collectionapi.metmuseum.org/public/collection/v1/objects/';
+
+      const params    = new URLSearchParams(window.location.search);
+      const dataParam = params.get('data');
+      const contentDiv = document.getElementById('content');
+
+      function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function renderCards(objects) {
+        document.title = 'Your Height in Art — ' + objects.length + ' object' +
+                         (objects.length === 1 ? '' : 's');
+        let html = '';
+        for (let obj of objects) {
+          let heightLabel = obj.height_cm
+            ? (obj.height_cm >= 100
+                ? (obj.height_cm / 100).toFixed(2) + ' m'
+                : obj.height_cm.toFixed(1) + ' cm')
+            : '';
+          let imgSrc = 'data/small_images/' + obj.id + '.jpg';
+
+          html += '<div class="artwork-card">';
+          html += '<div class="card-image-col">';
+          html += '<img src="' + escapeHtml(imgSrc) + '" alt="' + escapeHtml(obj.title || '') + '" loading="lazy">';
+          html += '</div>';
+          html += '<div class="card-meta-col">';
+          if (heightLabel) {
+            html += '<div><span class="artwork-height-badge">' + escapeHtml(heightLabel) + '</span></div>';
+          }
+          html += '<div class="artwork-title">' + escapeHtml(obj.title || 'Untitled') + '</div>';
+          html += '<div class="artwork-artist">' + escapeHtml(obj.artist || '') + '</div>';
+          html += '<div class="metadata-list">';
+          if (obj.date)       html += '<span><strong>Date:</strong> '       + escapeHtml(obj.date)       + '</span>';
+          if (obj.medium)     html += '<span><strong>Medium:</strong> '     + escapeHtml(obj.medium)     + '</span>';
+          if (obj.department) html += '<span><strong>Department:</strong> ' + escapeHtml(obj.department) + '</span>';
+          if (obj.culture)    html += '<span><strong>Culture:</strong> '    + escapeHtml(obj.culture)    + '</span>';
+          html += '</div>';
+          if (obj.link) {
+            html += '<a href="' + escapeHtml(obj.link) + '" target="_blank" rel="noopener" class="met-link">View on The Met &rarr;</a>';
+          }
+          html += '</div>';
+          html += '</div>';
+        }
+        contentDiv.innerHTML = html;
+      }
+
+      async function enrichFromAPI(obj) {
+        try {
+          const res = await fetch(MET_API + encodeURIComponent(obj.id));
+          if (!res.ok) return;
+          const d = await res.json();
+          obj.title      = obj.title      || d.title              || '';
+          obj.artist     = obj.artist     || d.artistDisplayName  || '';
+          obj.date       = obj.date       || d.objectDate         || '';
+          obj.medium     = obj.medium     || d.medium             || '';
+          obj.department = obj.department || d.department         || '';
+          obj.culture    = obj.culture    || d.culture            || '';
+          obj.link       = obj.link       || d.objectURL          || '';
+        } catch(e) { /* network unavailable — render with what we have */ }
+      }
+
+      (async function() {
+        if (!dataParam) {
+          contentDiv.innerHTML =
+            '<div class="error-message">No artwork data found. Please scan a QR code from the Height in Art experience.</div>';
+          return;
+        }
+
+        let objects;
+        try {
+          objects = JSON.parse(decodeURIComponent(escape(atob(dataParam))));
+        } catch(e) {
+          contentDiv.innerHTML =
+            '<div class="error-message">Could not read artwork data. The QR code may be damaged or expired.</div>';
+          return;
+        }
+
+        if (!objects || objects.length === 0) {
+          contentDiv.innerHTML =
+            '<div class="error-message">No artworks found in this QR code.</div>';
+          return;
+        }
+
+        const needsEnrichment = objects.some(o => !o.title);
+        if (needsEnrichment) {
+          contentDiv.innerHTML = '<div class="error-message" style="padding:40px 20px;">Loading artwork details&hellip;</div>';
+          await Promise.all(objects.map(o => o.title ? Promise.resolve() : enrichFromAPI(o)));
+        }
+
+        renderCards(objects);
+      })();
+    </script>
+  </body>
+</html>

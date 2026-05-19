@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>About | Pose Match</title>
+    <script src="branding.js"></script>
+    <script src="analytics.js"></script>
+    <style>
+      body {
+        font-family: var(--brand-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: var(--brand-page-bg, #f5f5f5);
+        background-image: var(--brand-bg-image, none);
+        background-repeat: var(--brand-bg-repeat, no-repeat);
+        background-size: var(--brand-bg-size, cover);
+        background-position: var(--brand-bg-position, center);
+      }
+
+      .brand-logo {
+        display: none;
+        max-height: 60px;
+        margin-bottom: 16px;
+        padding: 10px 16px;
+        border-radius: var(--brand-card-radius, 8px);
+        background-color: var(--brand-logo-bg, transparent);
+      }
+
+      .container {
+        background: var(--brand-card-bg, white);
+        border-radius: var(--brand-card-radius, 8px);
+        padding: 30px;
+        box-shadow: var(--brand-card-shadow, 0 2px 4px rgba(0,0,0,0.1));
+      }
+
+      h1 {
+        margin-top: 0;
+        color: var(--brand-text-dark, #333);
+      }
+
+      p {
+        color: var(--brand-text-light, #666);
+        line-height: 1.6;
+      }
+
+      .back-link {
+        display: inline-block;
+        margin-bottom: 20px;
+        color: var(--brand-text-light, #666);
+        text-decoration: none;
+      }
+
+      .back-link:hover {
+        color: var(--brand-text-dark, #333);
+      }
+    </style>
+  </head>
+
+  <body>
+    <img class="brand-logo" alt="Logo" style="display:none">
+    <a href="index.html" class="back-link">&larr; Back to Pose Match</a>
+
+    <div class="container">
+      <h1>About Pose Match</h1>
+
+      <p>
+        Pose Match is an interactive experience that matches your body pose to artworks
+        from museum collections. Strike a pose in front of your webcam and discover
+        artworks that share your stance.
+      </p>
+
+      <p>
+        This project uses machine learning (MoveNet) to detect body poses in real-time
+        and compares them against a database of pre-analyzed artwork images.
+      </p>
+
+      <h2>How it works</h2>
+      <p>
+        1. Stand in front of your webcam<br>
+        2. The system detects your pose<br>
+        3. Your pose is matched to artworks with similar poses<br>
+        4. Scan the QR code or click the image to learn more about the artwork
+      </p>
+
+      <p>
+        <b>Explore</b> mode will let you explore more deeply into the collection. Once you match with a work of art, that work will not repeat for some period of time.
+      </p>
+
+      <p>
+        <b>Best Match</b> mode will show you the best match to your pose. As a result, you are likely to see repeats of the same work more frequently.
+      </p>
+
+      <h2>Credits</h2>
+      <p>
+        Artwork images courtesy of The Metropolitan Museum of Art Open Access collection, the Smithsonian Open Access collection, and the SMK Open Access collection.
+      </p>
+
+      <p>
+        Built with ml5.js, p5.js, and TensorFlow by your friends at the <a href="https://www.glamelab.org/">GLAM-E Lab</a>
+.
+      </p>
+      </p>
+    </div>
+  </body>
+</html>
