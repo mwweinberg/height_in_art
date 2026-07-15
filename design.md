@@ -124,11 +124,11 @@ height_in_art/
 ├── info.html               # Multi-object info page (opened via QR on visitor's phone)
 ├── about.html              # About page (content TBD)
 ├── gesture-animation.js    # Animated stick figure (plain canvas, no p5 dependency)
+├── ml5.min.js              # Local ml5 build (CDN version lacked detectStart; pose_match/.gitignore excluded it from that path)
 ├── branding.js             # CSS custom properties
 ├── analytics.js            # Analytics stub
 ├── branding/               # Fonts, logo, favicon
-├── pose_match/
-│   └── ml5.min.js          # Local ml5 build (CDN version lacked detectStart)
+├── pose_match/             # Sibling reference project (visual design reference)
 ├── data/
 │   ├── height_index.json       # 2.1MB — loaded at startup
 │   ├── object_metadata.json    # 51.8MB — loaded lazily in background

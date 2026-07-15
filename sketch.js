@@ -24,13 +24,18 @@ const KP = {
 
 const CONFIDENCE_THRESHOLD = 0.10; // lowered to capture more samples, esp. raised wrist
 
-// Gesture detection
-const GESTURE_WINDOW_MS   = 4000;  // rolling window — gesture takes ~3-4s in practice
-const GESTURE_COOLDOWN_MS = 3000;  // min time between trigger events
-const WRIST_CARRY_MS      = 300;   // carry last known wrist position through confidence gaps
+// Debug overlay — enabled with ?debug in the URL (e.g. index.html?debug)
+const DEBUG_MODE = new URLSearchParams(window.location.search).has('debug');
+
+// Measurement: sample the pose for this long after the gesture, use the median
+const MEASURE_WINDOW_MS  = 800;
+const MEASURE_MIN_SAMPLES = 3;
 
 // Still-frame display duration before switching back to live
 const STILL_DURATION_MS = 500;
+
+// Reset to the idle attract screen after this long with nobody in frame
+const IDLE_RESET_MS = 60000;
 
 // Object drop animation
 const DROP_STAGGER_MS  = 250;  // delay between each object starting to fall
@@ -43,6 +48,7 @@ const TOLERANCE_STEP    = 0.05;
 const MAX_TOLERANCE     = 0.50;
 const MAX_SMALL_OBJECTS = 3;   // objects < 2 cm
 const MAX_LARGE_OBJECTS = 1;   // objects > 100 cm
+const MAX_STACK_OBJECTS = 25;  // keeps the stack legible and the QR payload within capacity
 
 // Right-panel layout
 const PANEL_PADDING_TOP    = 20;
@@ -51,7 +57,14 @@ const STACK_AREA_H = CANVAS_H - PANEL_PADDING_TOP - PANEL_PADDING_BOTTOM;
 
 // --- App State ---------------------------------------------------------------
 
-let appState = 'IDLE'; // 'IDLE' | 'DISPLAYING'
+let appState = 'IDLE'; // 'IDLE' | 'MEASURING' | 'DISPLAYING'
+
+// In-progress measurement: { trackerId, samples: [videoPx], occludedCount, endTime }
+let measuring = null;
+let stateBeforeMeasure = 'IDLE';
+
+// Transient visitor-facing message drawn on the right panel
+let statusMsg = null; // { text, until }
 
 // --- p5 / ml5 globals --------------------------------------------------------
 
@@ -60,6 +73,7 @@ let video;
 let poses = [];
 let cameraReady = false;
 let cameraError = false;
+let lastPoseSeenTime = 0;
 
 // Webcam crop params (updated each draw, used for still capture)
 let cropSx = 0, cropSy = 0, cropSw = 640, cropSh = 480;
@@ -70,20 +84,22 @@ let stillCapturedAt = 0;
 let showingStill    = false;
 
 // --- Calibration -------------------------------------------------------------
+// v2 format: { version: 2, fractionPerCm, videoWidth, videoHeight }
+// fractionPerCm = (person's pixel height / video height in px) per cm of real
+// height — resolution-independent, measured and applied in raw video coords.
 
-let calibration = null; // { pixelsPerCm }
+let calibration = null;
 
 // --- Data --------------------------------------------------------------------
 
 let heightIndex  = null;  // [[object_id, height_cm], ...]
+let heightIndexError = false;
 let objectMetadata = null;  // { "id": { title, artist, date, medium, department, culture, link } }
 let metadataReady  = false;
 
-// --- Gesture Tracking --------------------------------------------------------
-// Per pose slot: { samples: [{time, leftWristY, rightWristY, hipY, noseY}] }
+// --- Gesture Tracking (shared module: gesture-tracker.js) ---------------------
 
-let gestureTrackers         = [];
-let lastGestureTriggerTime  = -9999;
+let trackerSet = null;
 
 // --- Matched Objects & Animation ---------------------------------------------
 
@@ -114,12 +130,13 @@ function setup() {
   let msg = document.getElementById('loading-message');
   if (msg) msg.remove();
 
-  // Load calibration from localStorage
-  try {
-    let stored = localStorage.getItem('heightInArt_calibration');
-    if (stored) calibration = JSON.parse(stored);
-  } catch(e) {}
+  calibration = loadCalibration();
   updateCalibrationBanner();
+
+  trackerSet = createGestureTrackerSet({
+    confidence: CONFIDENCE_THRESHOLD,
+    cooldownMs: 3000
+  });
 
   // Load height index
   loadJSON('data/height_index.json', function(data) {
@@ -127,25 +144,22 @@ function setup() {
     loadMetadataInBackground();
   }, function(err) {
     console.error('Failed to load height_index.json:', err);
+    heightIndexError = true;
   });
 
-  // Webcam
+  // Webcam (single capture — p5 owns the stream)
   video = createCapture(VIDEO, function() {
     cameraReady = true;
     bodyPose.detectStart(video, function(results) {
       poses = results;
-      while (gestureTrackers.length < poses.length) {
-        gestureTrackers.push({ samples: [] });
-      }
     });
   });
   video.size(640, 480);
   video.hide();
 
   video.elt.addEventListener('error', function() { cameraError = true; });
-  navigator.mediaDevices.getUserMedia({ video: true }).catch(function() {
-    cameraError = true;
-  });
+  // If the camera never becomes ready (permission denied, no device), surface it.
+  setTimeout(function() { if (!cameraReady) cameraError = true; }, 15000);
 
   // QR widget (hidden until built)
   qrCode = new QRCode(document.getElementById('qrcode'), {
@@ -160,15 +174,27 @@ function draw() {
   drawLeftPanel();
   drawRightPanel();
 
-  updateGestureTrackers();
-  let triggeredPose = checkGestureTrigger();
-  if (triggeredPose !== null) {
-    startMeasurement(triggeredPose);
+  let now = millis();
+  if (poses.length > 0) lastPoseSeenTime = now;
+
+  trackerSet.update(poses, now, videoNativeHeight());
+
+  if (appState === 'MEASURING') {
+    updateMeasurement(now);
+  } else {
+    let hit = trackerSet.checkTrigger(now);
+    if (hit) startMeasurement(hit);
   }
 
   // Switch still frame back to live after STILL_DURATION_MS
-  if (showingStill && millis() - stillCapturedAt >= STILL_DURATION_MS) {
+  if (showingStill && now - stillCapturedAt >= STILL_DURATION_MS) {
     showingStill = false;
+  }
+
+  // Reset the display for the next visitor after a while with nobody in frame
+  if (appState === 'DISPLAYING' && lastPoseSeenTime > 0 &&
+      now - lastPoseSeenTime > IDLE_RESET_MS) {
+    resetToIdle();
   }
 
   // Pointer cursor when hovering the right panel with an info URL ready
@@ -185,29 +211,41 @@ function mousePressed() {
   }
 }
 
+function resetToIdle() {
+  appState       = 'IDLE';
+  matchedObjects = [];
+  measuring      = null;
+  infoUrl        = null;
+  qrBuilt        = false;
+  stillFrame     = null;
+  showingStill   = false;
+  hideQR();
+  showOcclusionWarning(false);
+  announce('');
+}
+
 // =============================================================================
 // Panel drawing
 // =============================================================================
 
+function videoNativeHeight() {
+  return (video && video.elt && video.elt.videoHeight) || (video && video.height) || 480;
+}
+
 function drawLeftPanel() {
-  if (cameraError) {
+  if (!cameraReady) {
     fill(30);
     noStroke();
     rect(0, 0, LEFT_W, CANVAS_H);
-    fill(255);
-    textAlign(CENTER, CENTER);
-    textSize(16);
-    text('Camera access denied', LEFT_W / 2, CANVAS_H / 2 - 20);
-    textSize(13);
-    fill(180);
-    text('Please allow camera access\nto use Height in Art', LEFT_W / 2, CANVAS_H / 2 + 20);
-    return;
-  }
-
-  if (!cameraReady) {
-    fill(20);
-    noStroke();
-    rect(0, 0, LEFT_W, CANVAS_H);
+    if (cameraError) {
+      fill(255);
+      textAlign(CENTER, CENTER);
+      textSize(16);
+      text('Camera unavailable', LEFT_W / 2, CANVAS_H / 2 - 20);
+      textSize(13);
+      fill(180);
+      text('Please allow camera access\nto use Height in Art', LEFT_W / 2, CANVAS_H / 2 + 20);
+    }
     return;
   }
 
@@ -227,14 +265,18 @@ function drawLeftPanel() {
   }
   cropSx = sx; cropSy = sy; cropSw = sw; cropSh = sh;
 
+  // Mirror the preview so it reads like a mirror
+  push();
+  translate(LEFT_W, 0);
+  scale(-1, 1);
   if (showingStill && stillFrame) {
     image(stillFrame, 0, 0, LEFT_W, CANVAS_H);
   } else {
     image(video, 0, 0, LEFT_W, CANVAS_H, sx, sy, sw, sh);
   }
+  pop();
 
-  // --- DEBUG OVERLAY (remove before launch) ---
-  drawDebugOverlay();
+  if (DEBUG_MODE) drawDebugOverlay();
 }
 
 function drawDebugOverlay() {
@@ -254,8 +296,8 @@ function drawDebugOverlay() {
     if (!pose || !pose.keypoints) continue;
     let kp = pose.keypoints;
 
-    // Draw skeleton — transform from video coords to canvas coords via crop params
-    function vx(x) { return (x - cropSx) * LEFT_W  / cropSw; }
+    // Video coords → canvas coords via crop params, then mirrored to match the preview
+    function vx(x) { return LEFT_W - (x - cropSx) * LEFT_W / cropSw; }
     function vy(y) { return (y - cropSy) * CANVAS_H / cropSh; }
     const SKEL = [[0,1],[0,2],[1,3],[2,4],[5,6],[5,7],[7,9],[6,8],[8,10],[5,11],[6,12],[11,12],[11,13],[13,15],[12,14],[14,16]];
     for (let [a, b] of SKEL) {
@@ -267,24 +309,17 @@ function drawDebugOverlay() {
     }
     noStroke();
 
-    // Gesture phase
-    let tracker = gestureTrackers[i];
+    let tracker = trackerSet.getTrackerForPose(i);
     let phase = 0;
     if (tracker && tracker.samples.length > 0) {
       for (let wKey of ['leftWristY', 'rightWristY']) {
-        let p = 0;
-        for (let s of tracker.samples) {
-          let wy = s[wKey];
-          if (wy === null) continue;
-          if      (p === 0 && wy >= s.hipY - 80)  p = 1;
-          else if (p === 1 && wy <= s.shoulderY)  p = 2;
-          else if (p === 2 && wy >= s.hipY - 80)  p = 3;
-        }
+        let p = trackerSet.gesturePhase(tracker.samples, wKey);
         if (p > phase) phase = p;
       }
     }
     let phaseDesc = ['① arm at side', '② raise arm', '③ lower arm', '✓ triggered'][phase];
     let samples = tracker ? tracker.samples.length : 0;
+    let trackerId = tracker ? tracker.id : '—';
 
     let lHip = kp[11], rHip = kp[12];
     let hipOk = (lHip && lHip.score > 0.1) || (rHip && rHip.score > 0.1);
@@ -296,7 +331,7 @@ function drawDebugOverlay() {
     textSize(11);
     textAlign(LEFT, TOP);
     fill(0, 244, 123);
-    text('Person ' + (i+1) + '  samples:' + samples + '  hips:' + (hipOk ? '✓' : '✗'), 10, yOff + 6);
+    text('Person #' + trackerId + '  samples:' + samples + '  hips:' + (hipOk ? '✓' : '✗'), 10, yOff + 6);
     fill(255, 220, 0);
     text(phaseDesc, 10, yOff + 22);
     fill(180);
@@ -310,8 +345,9 @@ function drawRightPanel() {
   noStroke();
   rect(LEFT_W, 0, RIGHT_W, CANVAS_H);
 
-  if (appState === 'IDLE') {
-    let cx = LEFT_W + RIGHT_W / 2;
+  let cx = LEFT_W + RIGHT_W / 2;
+
+  if (matchedObjects.length === 0) {
     gestureStickFigure(window, cx, CANVAS_H / 2 - 10, millis(), 1.15);
     fill(255, 255, 255, 50);
     textAlign(CENTER, CENTER);
@@ -319,178 +355,133 @@ function drawRightPanel() {
     noStroke();
     text('Make this gesture to measure\nyour height in art.',
          cx, CANVAS_H / 2 + 115);
-    return;
+  } else {
+    // Draw each matched object with drop animation
+    let now = millis();
+
+    for (let i = 0; i < matchedObjects.length; i++) {
+      let obj = matchedObjects[i];
+      if (!obj.img) continue;
+
+      let elapsed = now - obj.dropStartTime;
+      if (elapsed < 0) continue; // drop hasn't started yet
+
+      let progress = Math.min(1, elapsed / DROP_DURATION_MS);
+      let eased    = progress * progress; // ease-in quad (gravity feel)
+      let currentY = lerp(-obj.displayH, obj.targetY, eased);
+
+      let imgX = LEFT_W + (RIGHT_W - obj.displayW) / 2;
+
+      image(obj.img, imgX, currentY, obj.displayW, obj.displayH);
+    }
   }
 
-  // Draw each matched object with drop animation
-  let now = millis();
-
-  for (let i = 0; i < matchedObjects.length; i++) {
-    let obj = matchedObjects[i];
-    if (!obj.img) continue;
-
-    let elapsed = now - obj.dropStartTime;
-    if (elapsed < 0) continue; // drop hasn't started yet
-
-    let progress = Math.min(1, elapsed / DROP_DURATION_MS);
-    let eased    = progress * progress; // ease-in quad (gravity feel)
-    let currentY = lerp(-obj.displayH, obj.targetY, eased);
-
-    let imgX = LEFT_W + (RIGHT_W - obj.displayW) / 2;
-
-    image(obj.img, imgX, currentY, obj.displayW, obj.displayH);
+  if (appState === 'MEASURING') {
+    fill(0, 244, 123, 200);
+    textAlign(CENTER, CENTER);
+    textSize(14);
+    noStroke();
+    text('Measuring…', cx, CANVAS_H - 40);
   }
+
+  drawStatusMessage(cx);
 }
 
-// =============================================================================
-// Gesture detection
-// =============================================================================
-
-function updateGestureTrackers() {
-  let now = millis();
-
-  for (let i = 0; i < poses.length; i++) {
-    let pose = poses[i];
-    if (!pose || !pose.keypoints) continue;
-
-    let kp = pose.keypoints;
-    let nose  = kp[KP.NOSE];
-    let lHip  = kp[KP.LEFT_HIP];
-    let rHip  = kp[KP.RIGHT_HIP];
-    let lWrist    = kp[KP.LEFT_WRIST];
-    let rWrist    = kp[KP.RIGHT_WRIST];
-    let lShoulder = kp[KP.LEFT_SHOULDER];
-    let rShoulder = kp[KP.RIGHT_SHOULDER];
-
-    if (!nose || nose.score < CONFIDENCE_THRESHOLD) continue;
-    if ((!lHip || lHip.score < CONFIDENCE_THRESHOLD) &&
-        (!rHip || rHip.score < CONFIDENCE_THRESHOLD)) continue;
-
-    let hipY = 0, hipCount = 0;
-    if (lHip && lHip.score > CONFIDENCE_THRESHOLD) { hipY += lHip.y; hipCount++; }
-    if (rHip && rHip.score > CONFIDENCE_THRESHOLD) { hipY += rHip.y; hipCount++; }
-    hipY /= hipCount;
-
-    // Shoulder Y — used as "above head" threshold (more achievable than nose level)
-    let shoulderSum = 0, shoulderCount = 0;
-    if (lShoulder && lShoulder.score > CONFIDENCE_THRESHOLD) { shoulderSum += lShoulder.y; shoulderCount++; }
-    if (rShoulder && rShoulder.score > CONFIDENCE_THRESHOLD) { shoulderSum += rShoulder.y; shoulderCount++; }
-    let shoulderY = shoulderCount > 0 ? shoulderSum / shoulderCount : hipY - 80; // fallback estimate
-
-    // Ensure tracker exists with carry-forward state
-    if (!gestureTrackers[i]) gestureTrackers[i] = { samples: [], lastLeftWristY: null, lastLeftWristTime: 0, lastRightWristY: null, lastRightWristTime: 0 };
-    else if (!gestureTrackers[i].lastLeftWristTime) { gestureTrackers[i].lastLeftWristY = null; gestureTrackers[i].lastLeftWristTime = 0; gestureTrackers[i].lastRightWristY = null; gestureTrackers[i].lastRightWristTime = 0; }
-    let tracker = gestureTrackers[i];
-
-    let leftWristY  = null;
-    let rightWristY = null;
-
-    if (lWrist && lWrist.score > CONFIDENCE_THRESHOLD) {
-      leftWristY = lWrist.y;
-      tracker.lastLeftWristY    = lWrist.y;
-      tracker.lastLeftWristTime = now;
-    } else if (tracker.lastLeftWristY !== null && now - tracker.lastLeftWristTime < WRIST_CARRY_MS) {
-      leftWristY = tracker.lastLeftWristY; // carry forward
-    }
-
-    if (rWrist && rWrist.score > CONFIDENCE_THRESHOLD) {
-      rightWristY = rWrist.y;
-      tracker.lastRightWristY    = rWrist.y;
-      tracker.lastRightWristTime = now;
-    } else if (tracker.lastRightWristY !== null && now - tracker.lastRightWristTime < WRIST_CARRY_MS) {
-      rightWristY = tracker.lastRightWristY; // carry forward
-    }
-
-    let sample = {
-      time:        now,
-      leftWristY:  leftWristY,
-      rightWristY: rightWristY,
-      hipY:        hipY,
-      shoulderY:   shoulderY,
-      noseY:       nose.y
-    };
-
-    if (!gestureTrackers[i]) gestureTrackers[i] = { samples: [] };
-    gestureTrackers[i].samples.push(sample);
-
-    // Prune samples outside the window
-    gestureTrackers[i].samples = gestureTrackers[i].samples.filter(
-      s => now - s.time < GESTURE_WINDOW_MS
-    );
-  }
+function showStatus(text, durationMs) {
+  statusMsg = { text: text, until: millis() + (durationMs || 6000) };
 }
 
-// Returns pose index that completed gesture, or null.
-function checkGestureTrigger() {
-  let now = millis();
-  if (now - lastGestureTriggerTime < GESTURE_COOLDOWN_MS) return null;
-  if (!calibration) return null; // refuse to trigger without calibration
+function drawStatusMessage(cx) {
+  if (!statusMsg) return;
+  if (millis() > statusMsg.until) { statusMsg = null; return; }
 
-  for (let i = 0; i < gestureTrackers.length; i++) {
-    let tracker = gestureTrackers[i];
-    if (!tracker || tracker.samples.length < 8) continue;
-
-    for (let wristKey of ['leftWristY', 'rightWristY']) {
-      if (gestureComplete(tracker.samples, wristKey)) {
-        lastGestureTriggerTime = now;
-        gestureTrackers[i] = { samples: [], lastLeftWristY: null, lastLeftWristTime: 0, lastRightWristY: null, lastRightWristTime: 0 };
-        return i;
-      }
-    }
-  }
-  return null;
+  fill(0, 0, 0, 180);
+  noStroke();
+  rect(LEFT_W + 20, CANVAS_H - 90, RIGHT_W - 40, 64, 6);
+  fill(255, 200, 90);
+  textAlign(CENTER, CENTER);
+  textSize(13);
+  text(statusMsg.text, LEFT_W + RIGHT_W / 2, CANVAS_H - 58);
 }
 
-// Three-phase arc detection:
-// Phase 1: wrist at/below hip level
-// Phase 2: wrist above shoulder level (more achievable than nose, still distinctive)
-// Phase 3: wrist back at/below hip level
-function gestureComplete(samples, wristKey) {
-  const HIP_MARGIN = 80; // px — wrist within this distance above hip counts as "at hip"
-
-  let phase = 0;
-
-  for (let s of samples) {
-    let wy = s[wristKey];
-    if (wy === null) continue;
-
-    // In screen coords: larger y = lower on screen
-    let atHip      = wy >= s.hipY - HIP_MARGIN;
-    let aboveShoulder = wy <= s.shoulderY; // wrist above shoulder line
-
-    if (phase === 0 && atHip) {
-      phase = 1;
-    } else if (phase === 1 && aboveShoulder) {
-      phase = 2;
-    } else if (phase === 2 && atHip) {
-      return true;
-    }
-  }
-  return false;
+function announce(text) {
+  let el = document.getElementById('match-announcement');
+  if (el) el.textContent = text;
 }
 
 // =============================================================================
 // Measurement & matching
 // =============================================================================
 
-function startMeasurement(poseIndex) {
-  let pose = poses[poseIndex];
-  if (!pose) return;
+function startMeasurement(hit) {
+  if (!calibration) return; // banner already tells the operator to calibrate
+
+  if (heightIndexError || !heightIndex || heightIndex.length === 0) {
+    showStatus(heightIndexError
+      ? 'The artwork data failed to load.\nPlease reload the page.'
+      : 'Still loading artwork data —\nplease try again in a moment.');
+    return;
+  }
 
   captureStill();
+  stateBeforeMeasure = appState === 'MEASURING' ? stateBeforeMeasure : appState;
+  appState  = 'MEASURING';
+  measuring = {
+    trackerId:     hit.trackerId,
+    samples:       [],
+    occludedCount: 0,
+    endTime:       millis() + MEASURE_WINDOW_MS
+  };
+}
 
-  let heightCm = measureHeightCm(pose);
-  if (heightCm <= 0 || heightCm > 280 || heightCm < 50) return; // sanity check
+// Collect pose-height samples over the measurement window, then finalize.
+function updateMeasurement(now) {
+  if (!measuring) { appState = stateBeforeMeasure; return; }
 
-  if (!heightIndex || heightIndex.length === 0) return;
+  let tracker = trackerSet.getTrackerById(measuring.trackerId);
+  if (tracker && tracker.poseIndex >= 0 && poses[tracker.poseIndex]) {
+    let span = measureSpanVideoPx(poses[tracker.poseIndex]);
+    if (span.pixels > 0) {
+      measuring.samples.push(span.pixels);
+      if (span.occluded) measuring.occludedCount++;
+    }
+  }
+
+  if (now < measuring.endTime) return;
+
+  // Finalize
+  let m = measuring;
+  measuring = null;
+
+  if (m.samples.length < MEASURE_MIN_SAMPLES) {
+    appState = stateBeforeMeasure;
+    showStatus('We couldn’t measure you.\nStep back so your whole body\nis visible, then try again.');
+    return;
+  }
+
+  showOcclusionWarning(m.occludedCount > m.samples.length / 2);
+
+  let pixelSpan = median(m.samples);
+  let heightCm  = (pixelSpan / videoNativeHeight()) / calibration.fractionPerCm;
+
+  if (!(heightCm >= 50 && heightCm <= 280)) {
+    appState = stateBeforeMeasure;
+    showStatus('That measurement didn’t look right.\nStand on the marked spot\nand try again.');
+    return;
+  }
 
   let matched = matchObjects(heightCm);
-  if (!matched || matched.length === 0) return;
+  if (!matched || matched.length === 0) {
+    appState = stateBeforeMeasure;
+    showStatus('We couldn’t find a matching\nset of objects — please try again.');
+    return;
+  }
 
   // Reset display
-  appState      = 'DISPLAYING';
+  appState       = 'DISPLAYING';
   matchedObjects = [];
-  qrBuilt       = false;
+  qrBuilt        = false;
+  infoUrl        = null;
   hideQR();
 
   // Scale factor: fit total stack into STACK_AREA_H
@@ -521,7 +512,14 @@ function startMeasurement(poseIndex) {
     });
   }
 
+  announce('We found ' + matched.length + ' museum objects that stack up to your height.');
   loadMatchedImages(heightCm);
+}
+
+function median(arr) {
+  let sorted = arr.slice().sort(function(a, b) { return a - b; });
+  let mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 function captureStill() {
@@ -532,20 +530,24 @@ function captureStill() {
   showingStill    = true;
 }
 
-// Returns height in cm using calibration. Falls back through keypoints for occlusion.
-function measureHeightCm(pose) {
+// Person's pixel span in RAW VIDEO coordinates (same space calibration uses).
+// Returns { pixels, occluded }; pixels <= 0 means unmeasurable this frame.
+function measureSpanVideoPx(pose) {
   let kp = pose.keypoints;
 
   let nose     = kp[KP.NOSE];
   let leftEye  = kp[KP.LEFT_EYE];
   let rightEye = kp[KP.RIGHT_EYE];
 
-  if (!nose || nose.score < CONFIDENCE_THRESHOLD) return 0;
+  if (!nose || nose.score < CONFIDENCE_THRESHOLD) return { pixels: 0, occluded: false };
 
   // Estimate top of head from eye-nose distance
-  let eyeY = null;
-  if (leftEye  && leftEye.score  > CONFIDENCE_THRESHOLD) eyeY = (eyeY || leftEye.y  + leftEye.y) / (eyeY ? 2 : 1);
-  if (rightEye && rightEye.score > CONFIDENCE_THRESHOLD) eyeY = (eyeY !== null ? (eyeY + rightEye.y) / 2 : rightEye.y);
+  let eyeY = null, eyeCount = 0;
+  if (leftEye && leftEye.score > CONFIDENCE_THRESHOLD) { eyeY = leftEye.y; eyeCount = 1; }
+  if (rightEye && rightEye.score > CONFIDENCE_THRESHOLD) {
+    eyeY = eyeCount > 0 ? (eyeY + rightEye.y) / 2 : rightEye.y;
+    eyeCount++;
+  }
 
   let topY;
   if (eyeY !== null) {
@@ -595,21 +597,12 @@ function measureHeightCm(pose) {
         bottomY = topY + pixelHeight;
         occluded = true;
       } else {
-        return 0;
+        return { pixels: 0, occluded: false };
       }
     }
   }
 
-  showOcclusionWarning(occluded);
-
-  let pixelHeight = bottomY - topY;
-  if (pixelHeight <= 0) return 0;
-
-  // Video pixels → canvas pixels (accounting for crop-to-fit)
-  let scaleFactor       = CANVAS_H / cropSh;
-  let canvasPixelHeight = pixelHeight * scaleFactor;
-
-  return canvasPixelHeight / calibration.pixelsPerCm;
+  return { pixels: bottomY - topY, occluded: occluded };
 }
 
 function showOcclusionWarning(show) {
@@ -646,7 +639,7 @@ function tryMatch(targetHeightCm, tolerance) {
   let usedIds    = new Set();
   let limit      = 500;
 
-  while (remaining > 0 && limit-- > 0) {
+  while (remaining > 0 && limit-- > 0 && selected.length < MAX_STACK_OBJECTS) {
     let eligible = heightIndex.filter(function([id, h]) {
       if (usedIds.has(id)) return false;
       if (h > remaining * (1 + tolerance)) return false;
@@ -741,7 +734,11 @@ function loadMetadataInBackground() {
 function buildQRCode() {
   if (qrBuilt || !metadataReady) return;
 
-  var base = window.location.href.replace(/[^/]*$/, '');
+  // A local/museum install serves from localhost, so QR codes must be able to
+  // point at the public deployment instead. Set publicInfoBaseUrl in branding.js.
+  var base = window.__brandPublicInfoBase ||
+             window.location.href.replace(/[^/]*$/, '');
+  if (base.charAt(base.length - 1) !== '/') base += '/';
 
   function encode(payload) {
     var json = JSON.stringify(payload);
@@ -772,19 +769,30 @@ function buildQRCode() {
 
   // Try progressively smaller payloads until one fits in a QR code.
   var levels = [obj2full, obj2slim, obj2terse, obj2min];
+  var built  = false;
   for (var i = 0; i < levels.length; i++) {
     try {
       var url = encode(matchedObjects.map(levels[i]));
       qrCode.clear();
       qrCode.makeCode(url);
       infoUrl = url;
+      built = true;
       break;
     } catch(e) { /* payload too large — try next level */ }
   }
 
-  document.getElementById('qrcode').style.display    = 'block';
   document.getElementById('qr-sidebar').style.display = 'flex';
-  document.getElementById('qr-loading').style.display = 'none';
+  if (built) {
+    document.getElementById('qrcode').style.display    = 'block';
+    document.getElementById('qr-loading').style.display = 'none';
+  } else {
+    // Never leave an empty white box up
+    document.getElementById('qrcode').style.display     = 'none';
+    var loading = document.getElementById('qr-loading');
+    loading.textContent   = 'Link unavailable — please try again.';
+    loading.style.display = 'block';
+    infoUrl = null;
+  }
   qrBuilt = true;
 }
 
@@ -795,8 +803,25 @@ function hideQR() {
 }
 
 // =============================================================================
-// Calibration UI
+// Calibration
 // =============================================================================
+
+function loadCalibration() {
+  try {
+    let stored = localStorage.getItem('heightInArt_calibration');
+    if (!stored) return null;
+    let cal = JSON.parse(stored);
+    // Require the v2 resolution-independent format; older/corrupt values
+    // (including pre-fix calibrations, which were measured with buggy math)
+    // trigger the recalibration banner.
+    if (cal && cal.version === 2 &&
+        typeof cal.fractionPerCm === 'number' &&
+        isFinite(cal.fractionPerCm) && cal.fractionPerCm > 0) {
+      return cal;
+    }
+  } catch(e) {}
+  return null;
+}
 
 function updateCalibrationBanner() {
   let banner = document.getElementById('calibration-banner');

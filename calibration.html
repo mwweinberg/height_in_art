@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script src="branding.js"></script>
     <script src="ml5.min.js"></script>
+    <script src="gesture-tracker.js"></script>
     <script src="gesture-animation.js"></script>
     <style>
       body {
@@ -67,6 +68,7 @@
         width: 100%;
         height: 100%;
         object-fit: cover;
+        transform: scaleX(-1); /* mirror, like a mirror */
       }
       #pose-overlay {
         position: absolute;
@@ -349,9 +351,8 @@
       // =========================================================================
 
       const CONFIDENCE = 0.10;
-      const GESTURE_WINDOW_MS   = 4000;
-      const GESTURE_COOLDOWN_MS = 4000;
-      const WRIST_CARRY_MS      = 300;
+      const MEASURE_WINDOW_MS   = 800;  // sample the pose this long after the gesture
+      const MEASURE_MIN_SAMPLES = 3;
 
       const KP = {
         NOSE: 0, LEFT_EYE: 1, RIGHT_EYE: 2,
@@ -363,10 +364,16 @@
 
       let bodyPose        = null;
       let poses           = [];
-      let capturedPixelH  = null;
-      let gestureTrackers = [];
-      let lastTriggerTime = -9999;
+      let capturedPixelH  = null;  // median pixel height (raw video coords)
+      let capturedVideoH  = null;  // video height in px at capture time
+      let measuring       = null;  // { trackerId, samples: [], endTime }
       let unit = 'cm';
+
+      // Shared gesture detection (gesture-tracker.js) — same config as the main app
+      let trackerSet = createGestureTrackerSet({
+        confidence: CONFIDENCE,
+        cooldownMs: 3000
+      });
 
       // Video / canvas elements
       let videoEl   = document.getElementById('webcam');
@@ -438,12 +445,11 @@
         dbg('Stage 6: model ready — starting detection…');
         bodyPose.detectStart(videoEl, function(results) {
           poses = results;
-          while (gestureTrackers.length < poses.length) {
-            gestureTrackers.push({ samples: [] });
-          }
+          var now = Date.now();
+          trackerSet.update(poses, now, videoEl.videoHeight || 480);
           drawOverlay();
           updateDebugPanel();
-          checkGestures();
+          processGestureAndMeasurement(now);
         });
       }
 
@@ -461,7 +467,8 @@
       ];
 
       // Transform video keypoint coords → canvas display coords via crop params.
-      function vx(x) { return (x - cropSx) * overlayCanvas.width  / cropSw; }
+      // X is mirrored to match the mirrored video preview.
+      function vx(x) { return overlayCanvas.width - (x - cropSx) * overlayCanvas.width / cropSw; }
       function vy(y) { return (y - cropSy) * overlayCanvas.height / cropSh; }
 
       function drawOverlay() {
@@ -497,25 +504,15 @@
             ctx.fill();
           }
 
-          // Reference lines — only if hips are detected above threshold
-          let lHip = kp[KP.LEFT_HIP], rHip = kp[KP.RIGHT_HIP];
-          let lShoulder = kp[KP.LEFT_SHOULDER], rShoulder = kp[KP.RIGHT_SHOULDER];
+          // Reference lines from the tracker's latest sample (adaptive hip margin)
+          let tracker = trackerSet.getTrackerForPose(i);
+          let last = tracker && tracker.samples.length > 0
+            ? tracker.samples[tracker.samples.length - 1] : null;
 
-          let hipCount = 0, hipY = 0;
-          if (lHip && lHip.score > CONFIDENCE) { hipY += lHip.y; hipCount++; }
-          if (rHip && rHip.score > CONFIDENCE) { hipY += rHip.y; hipCount++; }
-
-          if (hipCount > 0) {
-            hipY /= hipCount;
-            let shoulderSum = 0, shoulderCount = 0;
-            if (lShoulder && lShoulder.score > CONFIDENCE) { shoulderSum += lShoulder.y; shoulderCount++; }
-            if (rShoulder && rShoulder.score > CONFIDENCE) { shoulderSum += rShoulder.y; shoulderCount++; }
-            let shoulderY = shoulderCount > 0 ? shoulderSum / shoulderCount : hipY - 80;
+          if (last) {
             let W = overlayCanvas.width;
-
-            // Convert reference Y values to canvas space
-            let canvasHipThresh  = vy(hipY - 80);
-            let canvasShoulderY  = vy(shoulderY);
+            let canvasHipThresh = vy(last.hipThreshY);
+            let canvasShoulderY = vy(last.shoulderY);
 
             ctx.setLineDash([8, 4]);
             ctx.lineWidth = 2;
@@ -552,51 +549,34 @@
           let kp = pose.keypoints;
 
           let lHip = kp[KP.LEFT_HIP], rHip = kp[KP.RIGHT_HIP];
-          let lShoulder = kp[KP.LEFT_SHOULDER], rShoulder = kp[KP.RIGHT_SHOULDER];
           let lWrist = kp[KP.LEFT_WRIST], rWrist = kp[KP.RIGHT_WRIST];
 
-          let lHipConf = lHip ? lHip.score.toFixed(3) : '—';
-          let rHipConf = rHip ? rHip.score.toFixed(3) : '—';
-          let hipCount = 0, hipY = 0;
-          if (lHip && lHip.score > CONFIDENCE) { hipY += lHip.y; hipCount++; }
-          if (rHip && rHip.score > CONFIDENCE) { hipY += rHip.y; hipCount++; }
-          if (hipCount === 0) {
-            html += '<strong>Person ' + (i+1) + '</strong>: hips below threshold '
+          let tracker = trackerSet.getTrackerForPose(i);
+          let last = tracker && tracker.samples.length > 0
+            ? tracker.samples[tracker.samples.length - 1] : null;
+          let samples = tracker ? tracker.samples.length : 0;
+          let personLabel = tracker ? tracker.id : (i + 1);
+
+          if (!last) {
+            let lHipConf = lHip ? lHip.score.toFixed(3) : '—';
+            let rHipConf = rHip ? rHip.score.toFixed(3) : '—';
+            html += '<strong>Person ' + personLabel + '</strong>: hips below threshold '
                   + '(L:' + lHipConf + ' R:' + rHipConf + ', need >' + CONFIDENCE + ')<br><br>';
             continue;
           }
-          hipY /= hipCount;
 
-          let shoulderSum = 0, shoulderCount = 0;
-          if (lShoulder && lShoulder.score > CONFIDENCE) { shoulderSum += lShoulder.y; shoulderCount++; }
-          if (rShoulder && rShoulder.score > CONFIDENCE) { shoulderSum += rShoulder.y; shoulderCount++; }
-          let shoulderY = shoulderCount > 0 ? shoulderSum / shoulderCount : hipY - 80;
-
-          let tracker = gestureTrackers[i];
-          let samples = tracker ? tracker.samples.length : 0;
-
-          html += '<strong>Person ' + (i+1) + '</strong> &nbsp; samples: ' + samples + '<br>';
-          html += 'hip threshold: y≥' + Math.round(hipY - 80) + ' &nbsp; shoulder: y≤' + Math.round(shoulderY) + '<br>';
+          html += '<strong>Person ' + personLabel + '</strong> &nbsp; samples: ' + samples + '<br>';
+          html += 'hip threshold: y≥' + Math.round(last.hipThreshY) + ' &nbsp; shoulder: y≤' + Math.round(last.shoulderY) + '<br>';
 
           for (let wKey of ['leftWristY', 'rightWristY']) {
             let label = wKey === 'leftWristY' ? 'Left wrist' : 'Right wrist';
             let wrist = wKey === 'leftWristY' ? lWrist : rWrist;
             let conf = wrist ? wrist.score.toFixed(2) : '—';
             let wy = wrist && wrist.score > CONFIDENCE ? Math.round(wrist.y) : null;
-            let atHip = wy !== null ? (wy >= hipY - 80 ? '✓' : '✗') : '—';
-            let aboveShoulder = wy !== null ? (wy <= shoulderY ? '✓' : '✗') : '—';
+            let atHip = wy !== null ? (wy >= last.hipThreshY ? '✓' : '✗') : '—';
+            let aboveShoulder = wy !== null ? (wy <= last.shoulderY ? '✓' : '✗') : '—';
 
-            // Replay phase
-            let phase = 0;
-            if (tracker && tracker.samples) {
-              for (let s of tracker.samples) {
-                let w = s[wKey];
-                if (w === null) continue;
-                if      (phase === 0 && w >= s.hipY - 80)  phase = 1;
-                else if (phase === 1 && w <= s.shoulderY)  phase = 2;
-                else if (phase === 2 && w >= s.hipY - 80)  phase = 3;
-              }
-            }
+            let phase = tracker ? trackerSet.gesturePhase(tracker.samples, wKey) : 0;
             let phaseDesc = ['① waiting at hip', '② raise arm above shoulder', '③ lower arm back to hip', '✓ COMPLETE'][phase];
             let cls = phase === 3 ? 'phase-ok' : 'phase-cur';
 
@@ -610,120 +590,57 @@
       }
 
       // =========================================================================
-      // Gesture detection (same three-phase arc as main app)
+      // Gesture trigger → measurement window → height form
       // =========================================================================
 
-      function checkGestures() {
+      function processGestureAndMeasurement(now) {
         if (capturedPixelH !== null) return; // already captured
-        let now = Date.now();
-        if (now - lastTriggerTime < GESTURE_COOLDOWN_MS) return;
 
-        updateTrackers(now);
-
-        for (let i = 0; i < gestureTrackers.length; i++) {
-          let tracker = gestureTrackers[i];
-          if (!tracker || tracker.samples.length < 8) continue;
-
-          for (let wKey of ['leftWristY', 'rightWristY']) {
-            if (gestureComplete(tracker.samples, wKey)) {
-              lastTriggerTime = now;
-              gestureTrackers[i] = { samples: [], lastLeftWristY: null, lastLeftWristTime: 0, lastRightWristY: null, lastRightWristTime: 0 };
-              onGestureDetected(i);
-              return;
-            }
+        if (measuring) {
+          let tracker = trackerSet.getTrackerById(measuring.trackerId);
+          if (tracker && tracker.poseIndex >= 0 && poses[tracker.poseIndex]) {
+            let pixH = measurePixelHeight(poses[tracker.poseIndex]);
+            if (pixH > 0) measuring.samples.push(pixH);
           }
-        }
-      }
+          if (now < measuring.endTime) return;
 
-      function updateTrackers(now) {
-        for (let i = 0; i < poses.length; i++) {
-          let pose = poses[i];
-          if (!pose || !pose.keypoints) continue;
-          let kp = pose.keypoints;
+          let m = measuring;
+          measuring = null;
 
-          let nose      = kp[KP.NOSE];
-          let lHip      = kp[KP.LEFT_HIP];
-          let rHip      = kp[KP.RIGHT_HIP];
-          let lWrist    = kp[KP.LEFT_WRIST];
-          let rWrist    = kp[KP.RIGHT_WRIST];
-          let lShoulder = kp[KP.LEFT_SHOULDER];
-          let rShoulder = kp[KP.RIGHT_SHOULDER];
+          if (m.samples.length < MEASURE_MIN_SAMPLES) {
+            indicator.textContent = 'Could not measure — make sure the full body is visible, then redo the gesture.';
+            return;
+          }
 
-          if (!nose || nose.score < CONFIDENCE) continue;
-
-          let hipCount = 0, hipY = 0;
-          if (lHip && lHip.score > CONFIDENCE) { hipY += lHip.y; hipCount++; }
-          if (rHip && rHip.score > CONFIDENCE) { hipY += rHip.y; hipCount++; }
-          if (hipCount === 0) continue;
-          hipY /= hipCount;
-
-          let shoulderSum = 0, shoulderCount = 0;
-          if (lShoulder && lShoulder.score > CONFIDENCE) { shoulderSum += lShoulder.y; shoulderCount++; }
-          if (rShoulder && rShoulder.score > CONFIDENCE) { shoulderSum += rShoulder.y; shoulderCount++; }
-          let shoulderY = shoulderCount > 0 ? shoulderSum / shoulderCount : hipY - 80;
-
-          if (!gestureTrackers[i]) gestureTrackers[i] = { samples: [], lastLeftWristY: null, lastLeftWristTime: 0, lastRightWristY: null, lastRightWristTime: 0 };
-          else if (!gestureTrackers[i].lastLeftWristTime) { gestureTrackers[i].lastLeftWristY = null; gestureTrackers[i].lastLeftWristTime = 0; gestureTrackers[i].lastRightWristY = null; gestureTrackers[i].lastRightWristTime = 0; }
-          let tracker = gestureTrackers[i];
-
-          let leftWristY = null, rightWristY = null;
-          if (lWrist && lWrist.score > CONFIDENCE) { leftWristY = lWrist.y; tracker.lastLeftWristY = lWrist.y; tracker.lastLeftWristTime = now; }
-          else if (tracker.lastLeftWristY !== null && now - tracker.lastLeftWristTime < WRIST_CARRY_MS) { leftWristY = tracker.lastLeftWristY; }
-
-          if (rWrist && rWrist.score > CONFIDENCE) { rightWristY = rWrist.y; tracker.lastRightWristY = rWrist.y; tracker.lastRightWristTime = now; }
-          else if (tracker.lastRightWristY !== null && now - tracker.lastRightWristTime < WRIST_CARRY_MS) { rightWristY = tracker.lastRightWristY; }
-
-          let sample = { time: now, leftWristY, rightWristY, hipY, shoulderY, noseY: nose.y };
-
-          gestureTrackers[i].samples.push(sample);
-          gestureTrackers[i].samples = gestureTrackers[i].samples.filter(
-            s => now - s.time < GESTURE_WINDOW_MS
-          );
-        }
-      }
-
-      function gestureComplete(samples, wristKey) {
-        const HIP_MARGIN = 80;
-        let phase = 0;
-
-        for (let s of samples) {
-          let wy = s[wristKey];
-          if (wy === null) continue;
-          let atHip         = wy >= s.hipY - HIP_MARGIN;
-          let aboveShoulder = wy <= s.shoulderY;
-
-          if      (phase === 0 && atHip)         { phase = 1; }
-          else if (phase === 1 && aboveShoulder) { phase = 2; }
-          else if (phase === 2 && atHip)         { return true; }
-        }
-        return false;
-      }
-
-      // =========================================================================
-      // After gesture: measure pixel height
-      // =========================================================================
-
-      function onGestureDetected(poseIndex) {
-        let pose = poses[poseIndex];
-        if (!pose) return;
-
-        let pixH = measurePixelHeight(pose);
-        if (pixH <= 0) {
-          indicator.textContent = 'Could not measure — make sure full body is visible.';
+          capturedPixelH = median(m.samples);
+          capturedVideoH = videoEl.videoHeight || 480;
+          indicator.textContent = 'Gesture detected!';
+          indicator.classList.add('active');
+          document.getElementById('height-form').style.display = 'block';
+          document.getElementById('redo-btn').style.display    = 'inline-block';
           return;
         }
 
-        capturedPixelH = pixH;
-        indicator.textContent = 'Gesture detected!';
-        indicator.classList.add('active');
-        document.getElementById('height-form').style.display = 'block';
+        let hit = trackerSet.checkTrigger(now);
+        if (hit) {
+          measuring = { trackerId: hit.trackerId, samples: [], endTime: now + MEASURE_WINDOW_MS };
+          indicator.textContent = 'Hold still — measuring…';
+        }
       }
 
+      function median(arr) {
+        let sorted = arr.slice().sort(function(a, b) { return a - b; });
+        let mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      }
+
+      // Pixel height in RAW VIDEO coordinates — the same space the main app
+      // measures in, so the stored ratio transfers directly.
       function measurePixelHeight(pose) {
         let kp = pose.keypoints;
         let nose     = kp[KP.NOSE];
-        let leftEye  = kp[1]; // LEFT_EYE
-        let rightEye = kp[2]; // RIGHT_EYE
+        let leftEye  = kp[KP.LEFT_EYE];
+        let rightEye = kp[KP.RIGHT_EYE];
 
         if (!nose || nose.score < CONFIDENCE) return 0;
 
@@ -793,16 +710,22 @@
           }
         }
 
-        if (!capturedPixelH || capturedPixelH <= 0) {
+        if (!capturedPixelH || capturedPixelH <= 0 || !capturedVideoH) {
           errEl.textContent = 'No pose measurement captured. Please redo the gesture.';
           errEl.style.display = 'block';
           return;
         }
 
-        // pixels per cm in video space; main app will apply crop scaling
-        let pixelsPerCm = capturedPixelH / heightCm;
-
-        let calibration = { pixelsPerCm: pixelsPerCm };
+        // Resolution-independent: fraction of the video frame's height that one
+        // cm of real height occupies. The main app measures the same fraction
+        // and divides, so camera resolution differences cancel out.
+        let calibration = {
+          version:       2,
+          fractionPerCm: (capturedPixelH / capturedVideoH) / heightCm,
+          videoWidth:    videoEl.videoWidth  || 640,
+          videoHeight:   capturedVideoH,
+          pixelsPerCm:   capturedPixelH / heightCm  // reference/debugging only
+        };
         try {
           localStorage.setItem('heightInArt_calibration', JSON.stringify(calibration));
         } catch(e) {
@@ -813,16 +736,16 @@
 
         document.getElementById('height-form').style.display  = 'none';
         document.getElementById('success-msg').style.display  = 'block';
-        document.getElementById('redo-btn').style.display = 'none';
       }
 
       function redoCalibration() {
         capturedPixelH = null;
+        capturedVideoH = null;
+        measuring      = null;
         indicator.textContent = 'Waiting for gesture…';
         indicator.classList.remove('active');
         document.getElementById('height-form').style.display = 'none';
         document.getElementById('error-msg').style.display   = 'none';
-        document.getElementById('redo-btn').style.display    = 'none';
       }
 
       // Start gesture animation

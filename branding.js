@@ -48,9 +48,19 @@
       backgroundSize: "cover",
       backgroundPosition: "center",
       logoLink: "https://www.glamelab.org/",
+
+      // Public base URL for QR-code links (must end in / or be "").
+      // REQUIRED for local/museum installs: without it, QR codes point at the
+      // machine's own address (e.g. http://localhost:8000/), which is dead on
+      // visitors' phones. Set to the public deployment, e.g.
+      // "https://height-in-art.pages.dev/". Leave "" to use the current URL.
+      publicInfoBaseUrl: "",
     };
 
     // ============== DO NOT EDIT BELOW ==============
+
+    // Expose the QR base URL to sketch.js
+    window.__brandPublicInfoBase = brand.publicInfoBaseUrl || "";
 
     // @font-face declarations for self-hosted fonts
     var css = "";
